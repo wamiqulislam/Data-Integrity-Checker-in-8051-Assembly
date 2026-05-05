@@ -1,0 +1,466 @@
+A51 MACRO ASSEMBLER  INTEGRITYENGINE                                                      05/04/2026 12:31:44 PAGE     1
+
+
+MACRO ASSEMBLER A51 V8.2.7.0
+OBJECT MODULE PLACED IN .\Objects\integrityEngine.obj
+ASSEMBLER INVOKED BY: D:\Tools\Kiel\C51\BIN\A51.EXE integrityEngine.asm SET(SMALL) DEBUG PRINT(.\Listings\integrityEngin
+                      e.lst) OBJECT(.\Objects\integrityEngine.obj) EP
+
+LOC  OBJ            LINE     SOURCE
+
+                       1     ;--- PIN DEFINITIONS ---
+  00B0                 2     SDA      BIT P3.0
+  00B1                 3     SCL      BIT P3.1
+  00B2                 4     MODE_SW  BIT P3.2   ; HIGH = STORE, LOW = VERIFY
+  0090                 5     LED_G    BIT P1.0
+  0091                 6     LED_R    BIT P1.1
+  0092                 7     LED_Y    BIT P1.2
+  0094                 8     LED_BLUE  BIT P1.4
+  0093                 9     BUZZER   BIT P1.3
+                      10     
+0000                  11     ORG 0000H
+0000 020030           12     LJMP START
+                      13     
+0030                  14     ORG 0030H
+0030                  15     START:
+0030 759000           16         MOV P1, #00H
+0033 7580FF           17         MOV P0, #0FFH       ; Force all segments OFF (Common Anode logic)
+0036 D292             18         SETB LED_Y          
+0038 7AFF             19         MOV R2, #0FFH       
+003A 31AA             20         ACALL UPDATE_DISPLAY
+                      21     
+003C                  22     MAIN:
+003C 119D             23         ACALL SCAN_KEYPAD   
+003E B4FF02           24         CJNE A, #0FFH, KEY_FOUND ; If A is NOT 0FFH, a key was pressed
+0041 80F9             25         SJMP MAIN                ; Otherwise, keep waiting
+                      26     
+0043                  27     KEY_FOUND:
+                      28         ; Logic for '*' (Reset)
+0043 B40A0A           29         CJNE A, #10, NOT_RESET
+0046 7AFF             30         MOV R2, #0FFH
+0048 318D             31         ACALL ALL_OFF
+004A D292             32         SETB LED_Y
+004C 31AA             33         ACALL UPDATE_DISPLAY     ; Update display to show '-'
+004E 80EC             34         SJMP MAIN
+                      35     
+0050                  36     NOT_RESET:
+                      37         ; Logic for '#' (Execute)
+0050 B40B06           38         CJNE A, #11, NOT_EXEC
+0053 EA               39         MOV A, R2
+0054 B4FF07           40         CJNE A, #0FFH, EXECUTE_LOGIC
+0057 80E3             41         SJMP MAIN
+                      42     
+0059                  43     NOT_EXEC:
+0059 FA               44         MOV R2, A           
+005A 31AA             45         ACALL UPDATE_DISPLAY ; Update 7-seg with new ID
+005C 80DE             46         SJMP MAIN
+                      47     
+                      48     ;--- CORE LOGIC ---
+005E                  49     EXECUTE_LOGIC:
+005E 3101             50         ACALL CALC_CHECKSUM ; Result is now a CRC-8 in R0
+0060 30B21A           51         JNB MODE_SW, DO_STORE
+                      52         
+0063                  53     DO_VERIFY:
+0063 EA               54         MOV A, R2           
+0064 3131             55         ACALL EE_READ       
+0066 B50009           56         CJNE A, 00H, FAIL   ; Compare EEPROM (A) with CRC (R0/00H)
+                      57         
+A51 MACRO ASSEMBLER  INTEGRITYENGINE                                                      05/04/2026 12:31:44 PAGE     2
+
+0069 318D             58         ACALL ALL_OFF
+006B D290             59         SETB LED_G          
+006D 118B             60         ACALL WAIT_FOR_USER 
+006F 020030           61         LJMP START
+                      62     
+0072                  63     FAIL:
+0072 318D             64         ACALL ALL_OFF
+0074 D291             65         SETB LED_R          
+0076 D293             66         SETB BUZZER
+0078 118B             67         ACALL WAIT_FOR_USER 
+007A 020030           68         LJMP START
+                      69             
+007D                  70     DO_STORE:
+007D EA               71         MOV A, R2            ; Address
+007E 88F0             72         MOV B, R0            ; Data (Checksum)
+0080 311B             73         ACALL EE_WRITE
+                      74         
+0082 318D             75         ACALL ALL_OFF        ; Clear all indicators
+0084 D294             76         SETB LED_BLUE        ; Light up the new Success LED
+0086 118B             77         ACALL WAIT_FOR_USER  ; Keep it lit until a key is pressed
+0088 020030           78         LJMP START           ; Return to standby (Yellow LED on)
+                      79             
+                      80             
+                      81     ;--- REFACTORED WAIT ROUTINE ---
+008B                  82     WAIT_FOR_USER:
+                      83         ; Wait for key release 
+008B                  84     W_REL1:
+008B 119D             85         ACALL SCAN_KEYPAD
+008D B4FFFB           86         CJNE A, #0FFH, W_REL1
+                      87         ; Wait for any new key press
+0090                  88     W_PRES:
+0090 119D             89         ACALL SCAN_KEYPAD
+0092 B4FF02           90         CJNE A, #0FFH, W_DONE
+0095 80F9             91         SJMP W_PRES
+0097                  92     W_DONE:
+                      93         ; Wait for final release
+0097                  94     W_REL2:
+0097 119D             95         ACALL SCAN_KEYPAD
+0099 B4FFFB           96         CJNE A, #0FFH, W_REL2
+009C 22               97         RET
+                      98     ;--- KEYPAD SCAN (PORT 2) ---
+009D                  99     SCAN_KEYPAD:
+009D 75A0F0          100         MOV P2, #0F0H       ; Columns high, Rows low
+00A0 E5A0            101         MOV A, P2
+00A2 54F0            102         ANL A, #0F0H
+00A4 64F0            103         XRL A, #0F0H
+00A6 6032            104         JZ NO_KEY           ; Exit if no key pressed
+                     105         
+                     106         ; Row 0 Scan
+00A8 75A0FE          107         MOV P2, #0FEH
+00AB E5A0            108         MOV A, P2
+00AD 30A42D          109         JNB P2.4, K1
+00B0 30A52D          110         JNB P2.5, K2
+00B3 30A62D          111         JNB P2.6, K3
+                     112         
+                     113         ; Row 1 Scan
+00B6 75A0FD          114         MOV P2, #0FDH
+00B9 30A42A          115         JNB P2.4, K4
+00BC 30A52A          116         JNB P2.5, K5
+00BF 30A62A          117         JNB P2.6, K6
+                     118         
+                     119         ; Row 2 Scan
+00C2 75A0FB          120         MOV P2, #0FBH
+00C5 30A427          121         JNB P2.4, K7
+00C8 30A527          122         JNB P2.5, K8
+00CB 30A627          123         JNB P2.6, K9
+A51 MACRO ASSEMBLER  INTEGRITYENGINE                                                      05/04/2026 12:31:44 PAGE     3
+
+                     124     
+                     125         ; Row 3 Scan
+00CE 75A0F7          126         MOV P2, #0F7H
+00D1 30A427          127         JNB P2.4, KSTAR
+00D4 30A521          128         JNB P2.5, K0
+00D7 30A624          129         JNB P2.6, KHASH
+                     130     
+00DA                 131     NO_KEY:
+00DA 74FF            132         MOV A, #0FFH
+00DC 22              133         RET
+                     134     
+                     135     ; Key Mappings
+00DD 7401            136     K1: MOV A, #1
+00DF 22              137         RET
+00E0 7402            138     K2: MOV A, #2
+00E2 22              139         RET
+00E3 7403            140     K3: MOV A, #3
+00E5 22              141         RET
+00E6 7404            142     K4: MOV A, #4
+00E8 22              143         RET
+00E9 7405            144     K5: MOV A, #5
+00EB 22              145         RET
+00EC 7406            146     K6: MOV A, #6
+00EE 22              147         RET
+00EF 7407            148     K7: MOV A, #7
+00F1 22              149         RET
+00F2 7408            150     K8: MOV A, #8
+00F4 22              151         RET
+00F5 7409            152     K9: MOV A, #9
+00F7 22              153         RET
+00F8 7400            154     K0: MOV A, #0
+00FA 22              155         RET
+00FB                 156     KSTAR:
+00FB 740A            157         MOV A, #10
+00FD 22              158         RET
+00FE                 159     KHASH:
+00FE 740B            160         MOV A, #11
+0100 22              161         RET
+                     162     
+                     163     ; Calculating file length
+  0080               164     FILE_LEN EQU (MY_FILE_END - MY_FILE)
+                     165     ;--- ROBUST CRC-8 CALCULATION ---
+                     166     ; Polynomial: X^8 + X^5 + X^4 + 1 (0x31)
+0101                 167     CALC_CHECKSUM:
+0101 9001C0          168         MOV DPTR, #MY_FILE
+0104 7F80            169         MOV R7, #FILE_LEN         ; Check 10 bytes
+0106 7800            170         MOV R0, #00H        ; R0 holds the CRC remainder (Initial value 0)
+                     171         
+0108                 172     BYTE_LOOP:
+0108 E4              173         CLR A
+0109 93              174         MOVC A, @A+DPTR     ; Get byte from "File"
+010A 68              175         XRL A, R0           ; XOR byte with current CRC
+010B F8              176         MOV R0, A           
+                     177         
+010C 7E08            178         MOV R6, #8          ; Process 8 bits
+010E                 179     BIT_LOOP:
+010E E8              180         MOV A, R0
+010F 33              181         RLC A               ; Shift MSB into Carry
+0110 5002            182         JNC SHIFT_ONLY      ; If Carry is 0, just shift
+                     183         
+                     184         ; If Carry is 1, XOR with Polynomial 0x31
+0112 6431            185         XRL A, #31H         
+0114                 186     SHIFT_ONLY:
+0114 F8              187         MOV R0, A           ; Store updated CRC
+0115 DEF7            188         DJNZ R6, BIT_LOOP   ; Repeat for all 8 bits
+                     189         
+A51 MACRO ASSEMBLER  INTEGRITYENGINE                                                      05/04/2026 12:31:44 PAGE     4
+
+0117 A3              190         INC DPTR
+0118 DFEE            191         DJNZ R7, BYTE_LOOP  ; Repeat for all bytes in file
+011A 22              192         RET
+                     193     
+                     194     ;--- I2C HIGH LEVEL ---
+011B                 195     EE_WRITE:
+011B 3149            196         ACALL I2C_START
+011D 74A0            197         MOV A, #0A0H        
+011F 3159            198         ACALL I2C_SEND
+0121 7400            199         MOV A, #00H         
+0123 3159            200         ACALL I2C_SEND
+0125 EA              201         MOV A, R2           
+0126 3159            202         ACALL I2C_SEND
+0128 E5F0            203         MOV A, B            
+012A 3159            204         ACALL I2C_SEND
+012C 3152            205         ACALL I2C_STOP
+012E 3184            206         ACALL DELAY_5MS     
+0130 22              207         RET
+                     208     
+0131                 209     EE_READ:
+0131 3149            210         ACALL I2C_START
+0133 74A0            211         MOV A, #0A0H
+0135 3159            212         ACALL I2C_SEND
+0137 7400            213         MOV A, #00H         
+0139 3159            214         ACALL I2C_SEND
+013B EA              215         MOV A, R2           
+013C 3159            216         ACALL I2C_SEND
+013E 3149            217         ACALL I2C_START     
+0140 74A1            218         MOV A, #0A1H        
+0142 3159            219         ACALL I2C_SEND
+0144 3172            220         ACALL I2C_RCV
+0146 3152            221         ACALL I2C_STOP
+0148 22              222         RET
+                     223     
+                     224     ;--- I2C LOW LEVEL (FIXED SYNTAX) ---
+0149                 225     I2C_START:
+0149 D2B0            226         SETB SDA
+014B D2B1            227         SETB SCL
+014D C2B0            228         CLR SDA
+014F C2B1            229         CLR SCL
+0151 22              230         RET
+                     231     
+0152                 232     I2C_STOP:
+0152 C2B0            233         CLR SDA
+0154 D2B1            234         SETB SCL
+0156 D2B0            235         SETB SDA
+0158 22              236         RET
+                     237     
+0159                 238     I2C_SEND:
+0159 7B08            239         MOV R3, #08H
+015B                 240     SEND_LP:
+015B 33              241         RLC A
+015C 92B0            242         MOV SDA, C
+015E D2B1            243         SETB SCL
+0160 316F            244         ACALL MIN_DELAY ; Small delay for Proteus stability
+0162 C2B1            245         CLR SCL
+0164 DBF5            246         DJNZ R3, SEND_LP
+                     247         
+                     248         ; ACK Clock Pulse (We pulse SCL but don't wait for SDA)
+0166 D2B0            249         SETB SDA        ; Release SDA
+0168 D2B1            250         SETB SCL
+016A 316F            251         ACALL MIN_DELAY
+016C C2B1            252         CLR SCL
+016E 22              253         RET
+                     254     
+016F                 255     MIN_DELAY: 
+A51 MACRO ASSEMBLER  INTEGRITYENGINE                                                      05/04/2026 12:31:44 PAGE     5
+
+016F 00              256         NOP
+0170 00              257         NOP
+0171 22              258         RET
+                     259     
+0172                 260     I2C_RCV:
+0172 7B08            261         MOV R3, #08H
+0174 D2B0            262         SETB SDA            
+0176                 263     RCV_LP:
+0176 D2B1            264         SETB SCL
+0178 A2B0            265         MOV C, SDA
+017A 33              266         RLC A
+017B C2B1            267         CLR SCL
+017D DBF7            268         DJNZ R3, RCV_LP
+017F D2B1            269         SETB SCL            
+0181 C2B1            270         CLR SCL
+0183 22              271         RET
+                     272     
+0184                 273     DELAY_5MS: 
+0184 7C0A            274         MOV R4, #10
+0186 7DFA            275     D1: MOV R5, #250
+0188 DDFE            276         DJNZ R5, $
+018A DCFA            277         DJNZ R4, D1
+018C 22              278         RET
+                     279     
+018D                 280     ALL_OFF:
+018D C290            281         CLR LED_G
+018F C291            282         CLR LED_R
+0191 C292            283         CLR LED_Y
+0193 C294            284             CLR LED_BLUE
+0195 C293            285         CLR BUZZER
+0197 22              286         RET
+                     287     
+0198                 288     FLASH_GREEN:
+0198 D290            289         SETB LED_G
+019A 3184            290         ACALL DELAY_5MS
+019C C290            291         CLR LED_G
+019E 22              292         RET
+                     293     
+                     294     ; Number Display
+                     295     
+                     296     ; 7-Segment Patterns for 0-9 (Common Anode)
+                     297     ; A '0' bit turns the segment ON
+019F                 298     SEG_DATA: 
+019F C0              299         DB 0C0H ; 0 (Segments g is off, others on)
+01A0 F9              300         DB 0F9H ; 1
+01A1 A4              301         DB 0A4H ; 2
+01A2 B0              302         DB 0B0H ; 3
+01A3 99              303         DB 99H  ; 4
+01A4 92              304         DB 92H  ; 5
+01A5 82              305         DB 82H  ; 6
+01A6 F8              306         DB 0F8H ; 7
+01A7 80              307         DB 80H  ; 8
+01A8 90              308         DB 90H  ; 9
+01A9 BF              309         DB 0BFH ; '-' (Middle bar 'g' is ON)
+                     310                     
+01AA                 311     UPDATE_DISPLAY:
+01AA EA              312         MOV A, R2
+01AB B4FF02          313         CJNE A, #0FFH, SHOW_NUM
+01AE 740A            314         MOV A, #10          ; Index 10 in SEG_DATA is '-'
+01B0                 315     SHOW_NUM:
+01B0 90019F          316         MOV DPTR, #SEG_DATA
+01B3 93              317         MOVC A, @A+DPTR
+01B4 F580            318         MOV P0, A
+01B6 22              319         RET
+01B7                 320     DISP_NOW:
+01B7 90019F          321         MOV DPTR, #SEG_DATA
+A51 MACRO ASSEMBLER  INTEGRITYENGINE                                                      05/04/2026 12:31:44 PAGE     6
+
+01BA 93              322         MOVC A, @A+DPTR     ; Get segment pattern from table
+01BB F580            323         MOV P0, A           ; Output to Port 0
+01BD D0E0            324         POP ACC             ; Restore Accumulator
+01BF 22              325         RET
+                     326     
+                     327     
+                     328     ;--- DATA FILE ---
+01C0                 329     MY_FILE:
+01C0 12122202        330         DB 12h, 12h, 22h, 02h, 02h, 32h, 12h, 32h, 12h, 32h, 0AAh, 055h, 0FFh, 000h, 11h, 22h
+01C4 02321232                
+01C8 1232AA55                
+01CC FF001122                
+01D0 33445366        331         DB 33h, 44h, 53h, 66h, 77h, 88h, 99h, 0AAh, 0BBh, 0CCh, 0DDh, 0EEh, 0FFh, 01h, 02h, 03h
+01D4 778899AA                
+01D8 BBCCDDEE                
+01DC FF010203                
+01E0 04050607        332         DB 04h, 05h, 06h, 07h, 08h, 09h, 0Ah, 0Bh, 0Ch, 0Dh, 0Eh, 0Fh, 10h, 11h, 12h, 13h
+01E4 08090A0B                
+01E8 0C0D0E0F                
+01EC 10111213                
+01F0 20212223        333         DB 20h, 21h, 22h, 23h, 24h, 25h, 26h, 27h, 28h, 29h, 2Ah, 2Bh, 2Ch, 2Dh, 2Eh, 2Fh
+01F4 24252627                
+01F8 28292A2B                
+01FC 2C2D2E2F                
+0200 30313233        334         DB 30h, 31h, 32h, 33h, 34h, 35h, 36h, 37h, 38h, 39h, 3Ah, 3Bh, 3Ch, 3Dh, 3Eh, 3Fh
+0204 34353637                
+0208 38393A3B                
+020C 3C3D3E3F                
+0210 40414243        335         DB 40h, 41h, 42h, 43h, 44h, 45h, 46h, 47h, 48h, 49h, 4Ah, 4Bh, 4Ch, 4Dh, 4Eh, 4Fh
+0214 44454647                
+0218 48494A4B                
+021C 4C4D4E4F                
+0220 50515253        336         DB 50h, 51h, 52h, 53h, 54h, 55h, 56h, 57h, 58h, 59h, 5Ah, 5Bh, 5Ch, 5Dh, 5Eh, 5Fh
+0224 54555657                
+0228 58595A5B                
+022C 5C5D5E5F                
+0230 60616263        337         DB 60h, 61h, 62h, 63h, 64h, 65h, 66h, 67h, 68h, 69h, 6Ah, 6Bh, 6Ch, 6Dh, 6Eh, 6Fh
+0234 64656667                
+0238 68696A6B                
+023C 6C6D6E6F                
+0240                 338     MY_FILE_END:
+                     339     
+                     340     END
+A51 MACRO ASSEMBLER  INTEGRITYENGINE                                                      05/04/2026 12:31:44 PAGE     7
+
+SYMBOL TABLE LISTING
+------ ----- -------
+
+
+N A M E             T Y P E  V A L U E   ATTRIBUTES
+
+ACC. . . . . . . .  D ADDR   00E0H   A   
+ALL_OFF. . . . . .  C ADDR   018DH   A   
+B. . . . . . . . .  D ADDR   00F0H   A   
+BIT_LOOP . . . . .  C ADDR   010EH   A   
+BUZZER . . . . . .  B ADDR   0090H.3 A   
+BYTE_LOOP. . . . .  C ADDR   0108H   A   
+CALC_CHECKSUM. . .  C ADDR   0101H   A   
+D1 . . . . . . . .  C ADDR   0186H   A   
+DELAY_5MS. . . . .  C ADDR   0184H   A   
+DISP_NOW . . . . .  C ADDR   01B7H   A   
+DO_STORE . . . . .  C ADDR   007DH   A   
+DO_VERIFY. . . . .  C ADDR   0063H   A   
+EE_READ. . . . . .  C ADDR   0131H   A   
+EE_WRITE . . . . .  C ADDR   011BH   A   
+EXECUTE_LOGIC. . .  C ADDR   005EH   A   
+FAIL . . . . . . .  C ADDR   0072H   A   
+FILE_LEN . . . . .  N NUMB   0080H   A   
+FLASH_GREEN. . . .  C ADDR   0198H   A   
+I2C_RCV. . . . . .  C ADDR   0172H   A   
+I2C_SEND . . . . .  C ADDR   0159H   A   
+I2C_START. . . . .  C ADDR   0149H   A   
+I2C_STOP . . . . .  C ADDR   0152H   A   
+K0 . . . . . . . .  C ADDR   00F8H   A   
+K1 . . . . . . . .  C ADDR   00DDH   A   
+K2 . . . . . . . .  C ADDR   00E0H   A   
+K3 . . . . . . . .  C ADDR   00E3H   A   
+K4 . . . . . . . .  C ADDR   00E6H   A   
+K5 . . . . . . . .  C ADDR   00E9H   A   
+K6 . . . . . . . .  C ADDR   00ECH   A   
+K7 . . . . . . . .  C ADDR   00EFH   A   
+K8 . . . . . . . .  C ADDR   00F2H   A   
+K9 . . . . . . . .  C ADDR   00F5H   A   
+KEY_FOUND. . . . .  C ADDR   0043H   A   
+KHASH. . . . . . .  C ADDR   00FEH   A   
+KSTAR. . . . . . .  C ADDR   00FBH   A   
+LED_BLUE . . . . .  B ADDR   0090H.4 A   
+LED_G. . . . . . .  B ADDR   0090H.0 A   
+LED_R. . . . . . .  B ADDR   0090H.1 A   
+LED_Y. . . . . . .  B ADDR   0090H.2 A   
+MAIN . . . . . . .  C ADDR   003CH   A   
+MIN_DELAY. . . . .  C ADDR   016FH   A   
+MODE_SW. . . . . .  B ADDR   00B0H.2 A   
+MY_FILE. . . . . .  C ADDR   01C0H   A   
+MY_FILE_END. . . .  C ADDR   0240H   A   
+NOT_EXEC . . . . .  C ADDR   0059H   A   
+NOT_RESET. . . . .  C ADDR   0050H   A   
+NO_KEY . . . . . .  C ADDR   00DAH   A   
+P0 . . . . . . . .  D ADDR   0080H   A   
+P1 . . . . . . . .  D ADDR   0090H   A   
+P2 . . . . . . . .  D ADDR   00A0H   A   
+P3 . . . . . . . .  D ADDR   00B0H   A   
+RCV_LP . . . . . .  C ADDR   0176H   A   
+SCAN_KEYPAD. . . .  C ADDR   009DH   A   
+SCL. . . . . . . .  B ADDR   00B0H.1 A   
+SDA. . . . . . . .  B ADDR   00B0H.0 A   
+SEG_DATA . . . . .  C ADDR   019FH   A   
+SEND_LP. . . . . .  C ADDR   015BH   A   
+SHIFT_ONLY . . . .  C ADDR   0114H   A   
+SHOW_NUM . . . . .  C ADDR   01B0H   A   
+START. . . . . . .  C ADDR   0030H   A   
+A51 MACRO ASSEMBLER  INTEGRITYENGINE                                                      05/04/2026 12:31:44 PAGE     8
+
+UPDATE_DISPLAY . .  C ADDR   01AAH   A   
+WAIT_FOR_USER. . .  C ADDR   008BH   A   
+W_DONE . . . . . .  C ADDR   0097H   A   
+W_PRES . . . . . .  C ADDR   0090H   A   
+W_REL1 . . . . . .  C ADDR   008BH   A   
+W_REL2 . . . . . .  C ADDR   0097H   A   
+
+
+REGISTER BANK(S) USED: 0 
+
+
+ASSEMBLY COMPLETE.  0 WARNING(S), 0 ERROR(S)
